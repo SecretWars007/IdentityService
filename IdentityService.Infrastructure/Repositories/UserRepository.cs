@@ -19,8 +19,7 @@ public sealed class UserRepository : IUserRepository
         return await _context
             .Users.Include(u => u.Roles)
             .ThenInclude(ur => ur.Role)
-            .Include(ux => ux.Mfa) // 🔥 CRÍTICO
-            .AsNoTracking()
+            .Include(u => u.Mfa)
             .FirstOrDefaultAsync(u => u.Email == email);
     }
 
@@ -29,15 +28,22 @@ public sealed class UserRepository : IUserRepository
         return await _context
             .Users.Include(u => u.Roles)
             .ThenInclude(ur => ur.Role)
-            .Include(ux => ux.Mfa) // 🔥 CRÍTICO
-            .AsNoTracking()
+            .Include(u => u.Mfa)
             .FirstOrDefaultAsync(u => u.Id == id);
     }
 
     public async Task AddAsync(User user)
     {
+        // Agregar usuario
         await _context.Users.AddAsync(user);
-        await _context.SaveChangesAsync();
+
+        // Asegurar que cada rol asignado esté trackeado
+        foreach (var userRole in user.Roles)
+        {
+            _context.Entry(userRole).State = EntityState.Added;
+        }
+
+        await _context.SaveChangesAsync(); // 🔥 Persistir todo
     }
 
     public async Task<bool> UserHasPermissionAsync(Guid userId, string permission)
@@ -48,25 +54,37 @@ public sealed class UserRepository : IUserRepository
             .AnyAsync(rp => rp.Permission.Code == permission);
     }
 
-    // ✅ Implementación de UpdateAsync
     public async Task UpdateAsync(User user)
     {
-        var trackedUser = await _context.Users.Include(u => u.Mfa).FirstAsync(u => u.Id == user.Id);
+        var trackedUser = await _context
+            .Users.Include(u => u.Mfa)
+            .Include(u => u.Roles)
+            .FirstAsync(u => u.Id == user.Id);
 
-        // Actualizar propiedades simples del User
+        // Actualizar propiedades simples
         _context.Entry(trackedUser).CurrentValues.SetValues(user);
 
+        // MFA
         if (user.Mfa != null)
         {
             if (trackedUser.Mfa == null)
             {
-                // 🆕 INSERT MFA
                 trackedUser.SetupMfa(user.Mfa.Secret);
             }
             else
             {
-                // 🔁 UPDATE MFA (ESTE ERA EL PROBLEMA)
                 _context.Entry(trackedUser.Mfa).CurrentValues.SetValues(user.Mfa);
+            }
+        }
+
+        // Roles
+        foreach (var role in user.Roles)
+        {
+            if (!trackedUser.Roles.Any(r => r.RoleId == role.RoleId))
+            {
+                trackedUser.Roles.Add(
+                    new UserRole { RoleId = role.RoleId, UserId = trackedUser.Id }
+                );
             }
         }
 

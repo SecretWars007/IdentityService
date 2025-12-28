@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace IdentityService.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(IdentityDbContext))]
-    partial class IdentityDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251225175411_addSystemConfiguration")]
+    partial class addSystemConfiguration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -180,15 +183,6 @@ namespace IdentityService.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("SystemSettings", "identity");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = new Guid("33274580-ffb0-448d-af09-788e85c148f0"),
-                            LockoutMinutes = 15,
-                            MaxFailedLoginAttempts = 3,
-                            MaxLockouts = 3
-                        });
                 });
 
             modelBuilder.Entity("IdentityService.Domain.Entities.User", b =>
@@ -223,9 +217,6 @@ namespace IdentityService.Infrastructure.Persistence.Migrations
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("text");
-
-                    b.Property<int>("TokenVersion")
-                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 

@@ -15,6 +15,7 @@ namespace IdentityService.Infrastructure.Persistence.Configurations
             builder.Property(x => x.FullName).IsRequired();
             builder.Property(x => x.Email).IsRequired();
             builder.Property(x => x.PasswordHash).IsRequired();
+            builder.Property(u => u.TokenVersion).IsRequired();
 
             builder
                 .HasOne(u => u.Mfa)

@@ -1,6 +1,4 @@
 using System;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using IdentityService.Application.Interfaces;
@@ -12,45 +10,114 @@ namespace IdentityService.Application.UseCases.Users
     {
         private readonly IUserRepository _userRepository;
         private readonly IRoleRepository _roleRepository;
+        private readonly IAuditLogRepository _auditLogRepository;
 
-        public RegisterUserHandler(IUserRepository userRepository, IRoleRepository roleRepository)
+        public RegisterUserHandler(
+            IUserRepository userRepository,
+            IRoleRepository roleRepository,
+            IAuditLogRepository auditLogRepository
+        )
         {
             _userRepository = userRepository;
             _roleRepository = roleRepository;
+            _auditLogRepository = auditLogRepository;
         }
 
-        public async Task ExecuteAsync(RegisterUserUseCase useCase)
+        public async Task<User> ExecuteAsync(RegisterUserUseCase useCase)
         {
             var req = useCase.Request;
-            // -----------------------------
-            // 1️⃣ Validar que el correo no exista
-            // -----------------------------
-            if (await _userRepository.GetByEmailAsync(req.Email) != null)
-                throw new InvalidOperationException("El correo ya está registrado");
-            // -----------------------------
-            // 2️⃣ Validar rol
-            // -----------------------------
-            var role =
-                await _roleRepository.GetByIdAsync(req.RoleId)
-                ?? throw new InvalidOperationException("Rol inválido");
-            // -----------------------------
-            // 3️⃣ Validar contraseña fuerte (mínimo 8, mayúscula, minúscula, número y símbolo)
-            // -----------------------------
-            if (!IsStrongPassword(req.Password))
-                throw new InvalidOperationException(
-                    "La contraseña no cumple los requisitos de seguridad"
+            var email = req.Email.ToLower();
+            Guid? newUserId = null;
+
+            try
+            {
+                // -----------------------------
+                // 1️⃣ Validar que el correo no exista
+                // -----------------------------
+                if (await _userRepository.GetByEmailAsync(email) != null)
+                    throw new InvalidOperationException("El correo ya está registrado");
+
+                // -----------------------------
+                // 2️⃣ Validar rol
+                // -----------------------------
+                var role = await _roleRepository.GetByIdAsync(req.RoleId);
+                if (role == null)
+                    throw new InvalidOperationException("Rol inválido");
+
+                // -----------------------------
+                // 3️⃣ Validar contraseña fuerte
+                // -----------------------------
+                if (!IsStrongPassword(req.Password))
+                    throw new InvalidOperationException(
+                        "La contraseña no cumple los requisitos de seguridad"
+                    );
+
+                var passwordHash = HashPassword(req.Password);
+
+                // -----------------------------
+                // 4️⃣ Crear usuario y asignar perfil
+                // -----------------------------
+                var user = new User(
+                    req.FullName,
+                    email,
+                    passwordHash,
+                    req.BirthDate,
+                    tokenVersion: 1
                 );
-            var passwordHash = HashPassword(req.Password);
 
-            var user = new User(req.FullName, req.Email, passwordHash, req.BirthDate);
-            user.SetProfile(req.DocumentNumber, req.Address, req.Phone, req.PhotoUrl);
-            user.AssignRole(role.Id);
+                user.SetProfile(req.DocumentNumber, req.Address, req.Phone, req.PhotoUrl);
 
-            await _userRepository.AddAsync(user);
+                // -----------------------------
+                // 5️⃣ Asignar rol
+                // -----------------------------
+                user.AssignRole(role.Id);
+
+                // -----------------------------
+                // 6️⃣ Guardar en BD
+                // -----------------------------
+                await _userRepository.AddAsync(user);
+                newUserId = user.Id;
+
+                // -----------------------------
+                // 7️⃣ Audit log: éxito
+                // -----------------------------
+                await _auditLogRepository.LogAsync(
+                    new AuditLog
+                    {
+                        Id = Guid.NewGuid(),
+                        Action = "UserRegistration",
+                        Result = "Success",
+                        Timestamp = DateTime.UtcNow,
+                        UserId = newUserId,
+                        IpAddress = string.Empty,
+                    }
+                );
+
+                return user;
+            }
+            catch (Exception ex)
+            {
+                // -----------------------------
+                // 8️⃣ Audit log: fallo
+                // -----------------------------
+                await _auditLogRepository.LogAsync(
+                    new AuditLog
+                    {
+                        Id = Guid.NewGuid(),
+                        Action = "UserRegistration",
+                        Result = $"Failed: {ex.Message}",
+                        Timestamp = DateTime.UtcNow,
+                        UserId = newUserId, // null si no se creó usuario
+                        IpAddress = string.Empty,
+                    }
+                );
+
+                throw; // relanza excepción para que el controlador maneje
+            }
         }
 
         // -----------------------------
-        // Método para hash de contraseña (Se recomienda usar BCrypt)
+        // Método para hash de contraseña
         // -----------------------------
         private static string HashPassword(string password)
         {
@@ -62,17 +129,11 @@ namespace IdentityService.Application.UseCases.Users
         // -----------------------------
         private bool IsStrongPassword(string password)
         {
-            if (password.Length < 8)
-                return false;
-            if (!HasUppercase(password))
-                return false;
-            if (!HasLowercase(password))
-                return false;
-            if (!HasDigit(password))
-                return false;
-            if (!HasSpecialChar(password))
-                return false;
-            return true;
+            return password.Length >= 8
+                && HasUppercase(password)
+                && HasLowercase(password)
+                && HasDigit(password)
+                && HasSpecialChar(password);
         }
 
         private bool HasUppercase(string s) => Regex.IsMatch(s, "[A-Z]");

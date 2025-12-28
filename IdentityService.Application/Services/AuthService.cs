@@ -1,4 +1,5 @@
 using IdentityService.Application.DTOs;
+using IdentityService.Application.Exceptions;
 using IdentityService.Application.Interfaces;
 using IdentityService.Domain.Entities;
 
@@ -10,17 +11,20 @@ namespace IdentityService.Application.Services
         private readonly IJwtTokenGenerator _jwtTokenGenerator;
         private readonly IMfaService _mfaService;
         private readonly IAuditLogRepository _auditLogRepository;
+        private readonly ISystemSettingsRepository _systemSettingsRepository;
 
         public AuthService(
             IUserRepository userRepository,
             IJwtTokenGenerator jwtTokenGenerator,
             IMfaService mfaService,
-            IAuditLogRepository auditLogRepository
+            IAuditLogRepository auditLogRepository,
+            ISystemSettingsRepository systemSettingsRepository
         )
         {
             _userRepository = userRepository;
             _jwtTokenGenerator = jwtTokenGenerator;
             _mfaService = mfaService;
+            _systemSettingsRepository = systemSettingsRepository;
             _auditLogRepository = auditLogRepository;
         }
 
@@ -47,8 +51,20 @@ namespace IdentityService.Application.Services
                     throw new Exception("Credenciales inválidas"); // mensaje genérico
                 }
 
+                var settings = await _systemSettingsRepository.GetAsync();
+
+                if (user.IsDisabled)
+                    throw new ForbiddenException("Cuenta deshabilitada");
+
+                if (user.IsLocked)
+                    throw new ForbiddenException(
+                        $"Cuenta bloqueada hasta {user.LockoutEnd:HH:mm:ss}"
+                    );
+
                 if (!BCrypt.Net.BCrypt.Verify(password, user.PasswordHash))
                 {
+                    user.RegisterFailedLogin(settings);
+                    await _userRepository.UpdateAsync(user);
                     await _auditLogRepository.LogAsync(
                         new AuditLog(user.Id, "LoginFailed", "Contraseña incorrecta", ip)
                     );
@@ -58,6 +74,8 @@ namespace IdentityService.Application.Services
                 // Si MFA está configurado pero no confirmado
                 if (user.Mfa != null && !user.Mfa.Confirmed)
                 {
+                    user.RegisterFailedLogin(settings);
+                    await _userRepository.UpdateAsync(user);
                     await _auditLogRepository.LogAsync(
                         new AuditLog(user.Id, "LoginFailed", "MFA no confirmado", ip)
                     );
@@ -72,6 +90,8 @@ namespace IdentityService.Application.Services
                         || !_mfaService.ValidateMfa(user.Mfa.Secret, mfaCode)
                     )
                     {
+                        user.RegisterFailedLogin(settings);
+                        await _userRepository.UpdateAsync(user);
                         await _auditLogRepository.LogAsync(
                             new AuditLog(user.Id, "LoginFailed", "Código MFA inválido", ip)
                         );
@@ -81,6 +101,9 @@ namespace IdentityService.Application.Services
 
                 // Login exitoso → generar token
                 var token = _jwtTokenGenerator.Generate(user);
+                // 🔓 LOGIN CORRECTO → reset intentos
+                user.RegisterSuccessfulLogin();
+                await _userRepository.UpdateAsync(user);
 
                 await _auditLogRepository.LogAsync(
                     new AuditLog(user.Id, "LoginSuccess", "Login exitoso", ip)
@@ -120,6 +143,31 @@ namespace IdentityService.Application.Services
         public void DisableMfa(User user)
         {
             user.DisableMfa();
+        }
+
+        // 👇 MÉTODO CLAVE (AQUÍ VA)
+        private async Task HandleFailedLogin(User user)
+        {
+            var settings = await _systemSettingsRepository.GetAsync();
+
+            user.RegisterFailedLogin(settings);
+            // ⏱ Bloqueo temporal
+            if (user.FailedLoginAttempts >= settings.MaxFailedLoginAttempts)
+            {
+                user.LockUntil(DateTime.UtcNow.AddMinutes(settings.LockoutMinutes));
+            }
+
+            // 🔥 Bloqueo definitivo
+            if (user.LockoutCount >= settings.MaxLockouts)
+            {
+                user.DisableAccount(); // 💥 INVALIDA JWT
+            }
+
+            await _userRepository.UpdateAsync(user);
+
+            await _auditLogRepository.LogAsync(
+                new AuditLog(user.Id, "LoginFailed", "Intento de login fallido", "N/A")
+            );
         }
     }
 }

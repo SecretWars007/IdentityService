@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using IdentityService.Api.Extensions;
 using IdentityService.Api.Middleware;
 using IdentityService.Application.Interfaces;
@@ -6,23 +7,25 @@ using IdentityService.Application.UseCases.Users;
 using IdentityService.Infrastructure.Auth;
 using IdentityService.Infrastructure.Persistence;
 using IdentityService.Infrastructure.Repositories;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// =====================================
-// 1️⃣ Servicios base
-// =====================================
+// ======================================================
+// 1️⃣ SERVICIOS BASE
+// ======================================================
 builder.Services.AddControllers();
-
-// Swagger
 builder.Services.AddEndpointsApiExplorer();
+
+// ======================================================
+// 2️⃣ SWAGGER + JWT
+// ======================================================
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "IdentityService API", Version = "v1" });
 
-    // Configuración de JWT Bearer
     var securityScheme = new OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -30,126 +33,162 @@ builder.Services.AddSwaggerGen(c =>
         Scheme = "bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Ingresa tu token JWT generado después del login",
+        Description = "Ingresa el token JWT en formato: Bearer {token}",
     };
 
     c.AddSecurityDefinition("Bearer", securityScheme);
 
-    var securityRequirement = new OpenApiSecurityRequirement
-    {
+    c.AddSecurityRequirement(
+        new OpenApiSecurityRequirement
         {
-            new OpenApiSecurityScheme
             {
-                Reference = new OpenApiReference
+                new OpenApiSecurityScheme
                 {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer",
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "Bearer",
+                    },
                 },
+                Array.Empty<string>()
             },
-            new string[] { }
-        },
-    };
-
-    c.AddSecurityRequirement(securityRequirement);
+        }
+    );
 });
 
-// =====================================
-// 2️⃣ Base de datos
-// =====================================
+// ======================================================
+// 3️⃣ BASE DE DATOS
+// ======================================================
 builder.Services.AddDbContext<IdentityDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("default"))
 );
 
-// =====================================
-// 3️⃣ Seguridad
-// =====================================
+// ======================================================
+// 4️⃣ SEGURIDAD
+// ======================================================
 
-// JWT + Refresh Tokens + MFA
+// JWT (⚠️ REGISTRA Authentication + Bearer UNA SOLA VEZ)
 builder.Services.AddJwt(builder.Configuration);
 
-// 👈 Registrar IHttpContextAccessor
+// Acceso a HttpContext
 builder.Services.AddHttpContextAccessor();
 
-// RBAC dinámico (policies desde DB)
+// Políticas RBAC dinámicas desde BD
 builder.Services.AddDynamicPolicies();
 
 // CORS
 builder.Services.AddCorsPolicy(builder.Configuration);
 
-// =====================================
-// 4️⃣ Repositorios
-// =====================================
-builder.Services.AddScoped<RegisterUserHandler>();
+// ======================================================
+// 5️⃣ REPOSITORIOS
+// ======================================================
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
-builder.Services.AddScoped<IAuthorizationService, AuthorizationService>();
-builder.Services.AddScoped<IMfaHandler, MfaHandler>();
+builder.Services.AddScoped<ISystemSettingsRepository, SystemSettingsRepository>();
+
+// ======================================================
+// 6️⃣ CASOS DE USO / HANDLERS
+// ======================================================
+builder.Services.AddScoped<RegisterUserHandler>();
+
 builder.Services.AddScoped<IEnableMfaUseCase, EnableMfaUseCase>();
 builder.Services.AddScoped<IConfirmMfaUseCase, ConfirmMfaUseCase>();
 builder.Services.AddScoped<IDisableMfaUseCase, DisableMfaUseCase>();
-builder.Services.AddScoped<IMfaService, MfaService>();
-builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
-builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 
-// =====================================
-// 5️⃣ Servicios de aplicación
-// =====================================
+builder.Services.AddScoped<IMfaHandler, MfaHandler>();
+builder.Services.AddScoped<IMfaService, MfaService>();
+
+// ======================================================
+// 7️⃣ SERVICIOS DE APLICACIÓN
+// ======================================================
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
+builder.Services.AddScoped<IAuthorizationService, AuthorizationService>();
 
-// =====================================
-// 6️⃣ Auth pipeline
-// =====================================
-builder.Services.AddAuthentication();
-builder.Services.AddAuthorization();
-
-// =====================================
-// 7️⃣ Build
-// =====================================
+// ======================================================
+// 8️⃣ BUILD
+// ======================================================
 var app = builder.Build();
 
-// =====================================
-// 8️⃣ Middleware
-// =====================================
+// ======================================================
+// 9️⃣ MIDDLEWARE
+// ======================================================
 
-// Swagger SOLO en Development
+// Swagger solo en Development
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// 🔹 Orden recomendado: Routing primero
+// Routing
 app.UseRouting();
 
-// 🔹 Middleware de excepciones mejorado
+// Manejo global de excepciones (OWASP)
 app.UseMiddleware<ExceptionMiddleware>();
 
-// 🔹 Middleware de auditoría OWASP
-//   Nota: AuditMiddleware resuelve IAuditLogRepository dentro de Invoke
+// Auditoría y logging de seguridad
 app.UseMiddleware<AuditMiddleware>();
 
 // CORS
 app.UseCors("DefaultPolicy");
 
-// Auth
+// Autenticación
 app.UseAuthentication();
+
+// Validación JWT extra (TokenVersion, usuario bloqueado, etc.)
+app.UseMiddleware<JwtValidationMiddleware>();
+
+// Autorización
 app.UseAuthorization();
 
-// =====================================
-// 9️⃣ Seed usuario ADMIN inicial
-// =====================================
+// ======================================================
+// 🔐 VALIDACIÓN TOKEN VERSION (INVALIDACIÓN JWT)
+// ======================================================
+app.Use(
+    async (context, next) =>
+    {
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            var userIdClaim = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var tokenVersionClaim = context.User.FindFirst("tokenVersion")?.Value;
+
+            if (userIdClaim == null || tokenVersionClaim == null)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            var userId = Guid.Parse(userIdClaim);
+            var tokenVersion = int.Parse(tokenVersionClaim);
+
+            var userRepo = context.RequestServices.GetRequiredService<IUserRepository>();
+            var user = await userRepo.GetByIdAsync(userId);
+
+            if (user == null || user.TokenVersion != tokenVersion || user.IsLocked)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+        }
+
+        await next();
+    }
+);
+
+// ======================================================
+// 🔁 SEED ADMIN INICIAL
+// ======================================================
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
     await IdentityDbSeeder.SeedAsync(dbContext);
 }
 
-// =====================================
-// 10️⃣ Endpoints
-// =====================================
+// ======================================================
+// 🔚 ENDPOINTS
+// ======================================================
 app.MapControllers();
-
 app.Run();

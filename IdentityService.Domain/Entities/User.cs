@@ -26,14 +26,31 @@ namespace IdentityService.Domain.Entities
         public UserMfa? Mfa => _mfa;
         public bool IsMfaEnabled => _mfa?.Enabled == true;
 
+        // failed login attempts
+        public int FailedLoginAttempts { get; private set; }
+        public int LockoutCount { get; private set; }
+        public DateTime? LockoutEnd { get; private set; }
+        public bool IsDisabled { get; private set; }
+        public int TokenVersion { get; private set; } = 1;
+
+        public bool IsLocked => LockoutEnd.HasValue && LockoutEnd > DateTime.UtcNow;
+
+        // ==== CONSTRUCTORES ====
         public User() { } // EF Core
 
-        public User(string fullName, string email, string passwordHash, DateTime birthDate)
+        public User(
+            string fullName,
+            string email,
+            string passwordHash,
+            DateTime birthDate,
+            int tokenVersion
+        )
         {
             FullName = fullName;
             Email = email;
             PasswordHash = passwordHash;
             BirthDate = birthDate;
+            TokenVersion = tokenVersion;
         }
 
         // ==== MÉTODOS DE DOMINIO ====
@@ -78,6 +95,61 @@ namespace IdentityService.Domain.Entities
         public void DisableMfa()
         {
             _mfa?.Disable();
+        }
+
+        public void RegisterFailedLogin(SystemSettings settings)
+        {
+            FailedLoginAttempts++;
+
+            if (FailedLoginAttempts >= settings.MaxFailedLoginAttempts)
+            {
+                LockoutCount++;
+                LockoutEnd = DateTime.UtcNow.Add(settings.LockoutDuration);
+                FailedLoginAttempts = 0;
+
+                if (LockoutCount >= settings.MaxLockouts)
+                {
+                    IsDisabled = true;
+                }
+            }
+        }
+
+        public void RegisterSuccessfulLogin()
+        {
+            FailedLoginAttempts = 0;
+            LockoutEnd = null;
+        }
+
+        public void InvalidateTokens()
+        {
+            TokenVersion++;
+        }
+
+        public void DisableAccount()
+        {
+            IsDisabled = true;
+            InvalidateTokens();
+        }
+
+        public void RegisterFailedLogin()
+        {
+            FailedLoginAttempts++;
+        }
+
+        public void ResetFailedLogins()
+        {
+            FailedLoginAttempts = 0;
+        }
+
+        public void LockUntil(DateTime until)
+        {
+            LockoutEnd = until;
+            LockoutCount++;
+        }
+
+        public void IncrementTokenVersion()
+        {
+            TokenVersion++;
         }
     }
 }

@@ -16,6 +16,7 @@ public class IdentityDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<UserMfa> UserMfas => Set<UserMfa>();
     public DbSet<UserProfile> UserProfiles => Set<UserProfile>();
+    public DbSet<SystemSettings> SystemSettings => Set<SystemSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -23,6 +24,8 @@ public class IdentityDbContext : DbContext
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(IdentityDbContext).Assembly);
 
         modelBuilder.Entity<UserProfile>().HasKey(up => up.Id);
+
+        modelBuilder.Entity<SystemSettings>();
 
         modelBuilder
             .Entity<User>()

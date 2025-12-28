@@ -32,6 +32,8 @@ namespace IdentityService.Infrastructure.Auth
                 new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
                 // JTI para trazabilidad / revocación
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                // Token version para revocación masiva
+                new Claim("tokenVersion", user.TokenVersion.ToString()),
             };
 
             // 🔥 ROLES (CRÍTICO para [Authorize(Roles = "...")])
@@ -51,11 +53,13 @@ namespace IdentityService.Infrastructure.Auth
                 claims.Add(new Claim("permission", permission));
             }
 
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["jwt:secret"]!));
+            var key = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(_config["JwtSettings:secret"]!)
+            );
 
             var token = new JwtSecurityToken(
-                issuer: _config["jwt:issuer"],
-                audience: _config["jwt:audience"],
+                issuer: _config["JwtSettings:issuer"],
+                audience: _config["JwtSettings:audience"],
                 claims: claims,
                 notBefore: DateTime.UtcNow,
                 expires: DateTime.UtcNow.AddMinutes(30),
